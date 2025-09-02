@@ -1,0 +1,12 @@
+[workspace]
+members = [
+  "anyrun-provider-ipc"
+]
+
+[package]
+name = "anyrun-provider"
+version = "25.9.0"
+edition = "2024"
+
+[workspace.dependencies]
+anyrun-interface = { git = "https://github.com/anyrun-org/anyrun-interface", branch = "anyrun-provider" }
