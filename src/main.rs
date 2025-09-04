@@ -1,6 +1,5 @@
 use std::{
-    env,
-    io::{self, BufRead, BufReader, Write},
+    env, io,
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
     sync::mpsc,
@@ -12,12 +11,8 @@ use anyrun_interface::{
     Match, PluginRef,
     abi_stable::{self, std_types::RVec},
 };
-use anyrun_provider_ipc::{Request, Response, Socket};
+use anyrun_provider_ipc::{CONFIG_DIRS, PLUGIN_PATHS, Request, Response, Socket};
 use clap::{Parser, Subcommand};
-
-pub const PLUGIN_PATHS: &[&str] = &["/usr/lib/anyrun", "/etc/anyrun/plugins"];
-// FIXME: These should somehow be shared reasonably between frontends and backends
-pub const CONFIG_DIRS: &[&str] = &["/etc/xdg/anyrun", "/etc/anyrun"];
 
 /// The program providing Anyrun plugin search results
 #[derive(Parser)]
@@ -26,8 +21,9 @@ struct Args {
     #[command(subcommand)]
     command: Command,
 
+    #[arg(short, long)]
     plugins: Vec<PathBuf>,
-    #[arg(long)]
+    #[arg(short, long)]
     config_dir: Option<String>,
 }
 
@@ -245,11 +241,13 @@ fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResult> {
             },
             Err(why) => match why.kind() {
                 io::ErrorKind::WouldBlock => (),
-                io::ErrorKind::ConnectionAborted => {
+                // This occurs when a subscriber disconnects
+                io::ErrorKind::UnexpectedEof => {
                     break;
                 }
                 _ => {
                     eprintln!("[anyrun-provider] Unexpected socket error: {why}");
+                    break;
                 }
             },
         }
