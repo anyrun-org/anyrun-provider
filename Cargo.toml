@@ -10,3 +10,9 @@ edition = "2024"
 
 [workspace.dependencies]
 anyrun-interface = { git = "https://github.com/anyrun-org/anyrun-interface", branch = "anyrun-provider" }
+
+[dependencies]
+clap = { version = "4.5.46", features = ["derive"] }
+anyrun-interface.workspace = true
+serde_json = "1.0.143"
+anyrun-provider-ipc = { path = "./anyrun-provider-ipc" }
