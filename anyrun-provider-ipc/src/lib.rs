@@ -6,6 +6,10 @@ use std::{
 use anyrun_interface::{HandleResult, Match, PluginInfo, abi_stable::std_types::RVec};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+// Default search paths, maintain backwards compatibility
+pub const CONFIG_DIRS: &[&str] = &["/etc/xdg/anyrun", "/etc/anyrun"];
+pub const PLUGIN_PATHS: &[&str] = &["/usr/lib/anyrun", "/etc/anyrun/plugins"];
+
 /// Requests from subscriber to provider
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
