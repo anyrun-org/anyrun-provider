@@ -1,5 +1,10 @@
+use std::{
+    io::{self, BufRead, BufReader, Write},
+    os::unix::net::UnixStream,
+};
+
 use anyrun_interface::{HandleResult, Match, PluginInfo, abi_stable::std_types::RVec};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Requests from subscriber to provider
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,4 +64,30 @@ pub enum Error {
     /// The provider can only serve one subscriber. This will be returned if another subscriber
     /// is connected
     Occupied,
+}
+
+pub struct Socket {
+    pub inner: BufReader<UnixStream>,
+}
+
+impl Socket {
+    pub fn new(stream: UnixStream) -> Self {
+        let inner = BufReader::new(stream);
+
+        Self { inner }
+    }
+
+    pub fn send<T: Serialize>(&mut self, value: &T) -> io::Result<()> {
+        let mut buf = serde_json::to_string(value).map_err(io::Error::other)?;
+        buf.push('\n');
+        self.inner.get_mut().write_all(buf.as_bytes())?;
+        Ok(())
+    }
+
+    pub fn recv<T: DeserializeOwned>(&mut self) -> io::Result<T> {
+        let mut buf = String::new();
+        self.inner.read_line(&mut buf)?;
+
+        serde_json::from_str::<T>(&buf).map_err(io::Error::other)
+    }
 }

@@ -116,7 +116,6 @@ dependencies = [
  "anyrun-interface",
  "anyrun-provider-ipc",
  "clap",
- "serde_json",
 ]
 
 [[package]]
@@ -125,6 +124,7 @@ version = "0.1.0"
 dependencies = [
  "anyrun-interface",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

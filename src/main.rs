@@ -1,19 +1,18 @@
 use std::{
-    collections::HashMap,
     env,
     io::{self, BufRead, BufReader, Write},
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
-    sync::{Arc, Mutex, mpsc},
-    thread::{self, JoinHandle},
+    sync::mpsc,
+    thread::{self},
     time::Duration,
 };
 
 use anyrun_interface::{
-    Match, PluginInfo, PluginRef,
+    Match, PluginRef,
     abi_stable::{self, std_types::RVec},
 };
-use anyrun_provider_ipc::{Request, Response};
+use anyrun_provider_ipc::{Request, Response, Socket};
 use clap::{Parser, Subcommand};
 
 pub const PLUGIN_PATHS: &[&str] = &["/usr/lib/anyrun", "/etc/anyrun/plugins"];
@@ -53,6 +52,7 @@ struct PluginState {
 struct State {
     // Has to be a Vec to preserve order
     plugins: Vec<PluginState>,
+    config_dir: String,
 }
 
 fn main() {
@@ -63,16 +63,20 @@ fn main() {
         .or_else(|_| env::var("HOME").map(|h| format!("{h}/.config/anyrun")))
         .unwrap();
 
-    let config_dir = args.config_dir.map(Some).unwrap_or_else(|| {
-        if PathBuf::from(&user_dir).exists() {
-            Some(user_dir.clone())
-        } else {
-            CONFIG_DIRS
-                .iter()
-                .map(|path| path.to_string())
-                .find(|path| PathBuf::from(path).exists())
-        }
-    });
+    let config_dir = args
+        .config_dir
+        .map(Some)
+        .unwrap_or_else(|| {
+            if PathBuf::from(&user_dir).exists() {
+                Some(user_dir.clone())
+            } else {
+                CONFIG_DIRS
+                    .iter()
+                    .map(|path| path.to_string())
+                    .find(|path| PathBuf::from(path).exists())
+            }
+        })
+        .unwrap_or(CONFIG_DIRS[0].into());
 
     let mut plugin_dirs = vec![
         env::var("XDG_DATA_HOME")
@@ -86,6 +90,7 @@ fn main() {
 
     let mut state = State {
         plugins: Vec::new(),
+        config_dir,
     };
 
     for plugin in &args.plugins {
@@ -138,13 +143,7 @@ fn main() {
             continue;
         };
 
-        plugin.init()(
-            config_dir
-                .as_ref()
-                .cloned()
-                .unwrap_or(CONFIG_DIRS[0].to_string())
-                .into(),
-        );
+        plugin.init()(state.config_dir.clone().into());
 
         state.plugins.push(PluginState { plugin, rx: None });
     }
@@ -179,49 +178,27 @@ fn main() {
 
 /// Returns whether or not the provider should quit
 fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResult> {
-    stream.set_nonblocking(true)?;
-    let mut stream = BufReader::new(stream);
+    let mut socket = Socket::new(stream);
+    socket.inner.get_ref().set_nonblocking(true)?;
 
-    let mut buf = String::new();
-    let mut read = move |stream: &mut BufReader<UnixStream>| -> io::Result<Request> {
-        buf.clear();
-        stream.read_line(&mut buf)?;
+    socket.send(&Response::Ready {
+        info: state
+            .plugins
+            .iter()
+            .map(|plugin_state| plugin_state.plugin.info()())
+            .collect(),
+    })?;
 
-        serde_json::from_str(&buf).map_err(io::Error::other)
-    };
-
-    let send = move |stream: &mut BufReader<UnixStream>,
-                     response: &Result<Response, anyrun_provider_ipc::Error>|
-          -> io::Result<()> {
-        let mut buf = serde_json::to_string(response).map_err(io::Error::other)?;
-        buf.push('\n');
-        stream.get_mut().write_all(buf.as_bytes())?;
-        Ok(())
-    };
-
-    send(
-        &mut stream,
-        &Ok(Response::Ready {
-            info: state
-                .plugins
-                .iter()
-                .map(|plugin_state| plugin_state.plugin.info()())
-                .collect(),
-        }),
-    )?;
     loop {
         for plugin_state in &mut state.plugins {
             if let Some(rx) = &plugin_state.rx {
                 match rx.try_recv() {
                     Ok(matches) => {
                         plugin_state.rx = None;
-                        send(
-                            &mut stream,
-                            &Ok(Response::Matches {
-                                plugin: plugin_state.plugin.info()(),
-                                matches,
-                            }),
-                        )?;
+                        socket.send(&Response::Matches {
+                            plugin: plugin_state.plugin.info()(),
+                            matches,
+                        })?;
                     }
                     Err(mpsc::TryRecvError::Empty) => (),
                     Err(mpsc::TryRecvError::Disconnected) => plugin_state.rx = None,
@@ -229,9 +206,15 @@ fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResult> {
             }
         }
 
-        match read(&mut stream) {
+        match socket.recv() {
             Ok(request) => match request {
-                Request::Reset => todo!(),
+                Request::Reset => {
+                    for plugin_state in &mut state.plugins {
+                        plugin_state.plugin.init()(state.config_dir.clone().into());
+
+                        plugin_state.rx = None;
+                    }
+                }
                 Request::Query { text } => {
                     for plugin_state in &mut state.plugins {
                         let (tx, rx) = mpsc::channel();
@@ -245,7 +228,17 @@ fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResult> {
                         plugin_state.rx = Some(rx);
                     }
                 }
-                Request::Handle { plugin, selection } => todo!(),
+                Request::Handle { plugin, selection } => {
+                    let plugin_state = state
+                        .plugins
+                        .iter()
+                        .find(|plugin_state| plugin_state.plugin.info()() == plugin)
+                        .unwrap();
+
+                    let result = plugin_state.plugin.handle_selection()(selection);
+
+                    socket.send(&Response::Handled { plugin, result })?;
+                }
                 Request::Quit => {
                     return Ok(WorkerResult::Quit);
                 }
