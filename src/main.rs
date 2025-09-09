@@ -240,7 +240,9 @@ fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResult> {
                 }
             },
             Err(why) => match why.kind() {
-                io::ErrorKind::WouldBlock => (),
+                io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(1));
+                }
                 // This occurs when a subscriber disconnects
                 io::ErrorKind::UnexpectedEof => {
                     break;
@@ -251,7 +253,6 @@ fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResult> {
                 }
             },
         }
-        thread::sleep(Duration::from_millis(10));
     }
 
     Ok(WorkerResult::Continue)
