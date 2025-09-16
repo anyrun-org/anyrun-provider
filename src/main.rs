@@ -82,6 +82,11 @@ fn main() {
         format!("{user_dir}/plugins"),
     ];
 
+    // Used mainly in Nix packaging
+    if let Ok(path) = env::var("ANYRUN_PLUGINS") {
+        plugin_dirs.push(path);
+    }
+
     plugin_dirs.extend(PLUGIN_PATHS.iter().map(|p| p.to_string()));
 
     let mut state = State {
