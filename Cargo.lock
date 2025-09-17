@@ -102,8 +102,8 @@ dependencies = [
 
 [[package]]
 name = "anyrun-interface"
-version = "25.9.0"
-source = "git+https://github.com/anyrun-org/anyrun-interface?branch=anyrun-provider#7c3d4f28e2e688ab17a84695dfff74790ea85af5"
+version = "25.9.3"
+source = "git+https://github.com/anyrun-org/anyrun-interface#0fda402f58b44485363092246538c5244ce1d51c"
 dependencies = [
  "abi_stable",
  "serde",

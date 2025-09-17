@@ -5,11 +5,11 @@ members = [
 
 [package]
 name = "anyrun-provider"
-version = "25.9.0"
+version = "25.9.3"
 edition = "2024"
 
 [workspace.dependencies]
-anyrun-interface = { git = "https://github.com/anyrun-org/anyrun-interface", branch = "anyrun-provider" }
+anyrun-interface = { git = "https://github.com/anyrun-org/anyrun-interface" }
 
 [dependencies]
 clap = { version = "4.5.46", features = ["derive"] }
