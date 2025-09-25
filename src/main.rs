@@ -1,10 +1,4 @@
-use std::{
-    env, io,
-    path::PathBuf,
-    sync::mpsc,
-    thread::{self},
-    time::Duration,
-};
+use std::{env, io, path::PathBuf};
 
 use anyrun_interface::{
     Match, PluginRef,
@@ -12,7 +6,10 @@ use anyrun_interface::{
 };
 use anyrun_provider_ipc::{CONFIG_DIRS, PLUGIN_PATHS, Request, Response, Socket};
 use clap::{Parser, Subcommand};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::{
+    net::{UnixListener, UnixStream},
+    sync::mpsc::{self, Receiver},
+};
 
 /// The program providing Anyrun plugin search results
 #[derive(Parser)]
@@ -40,9 +37,17 @@ enum WorkerResult {
     Continue,
 }
 
+enum Event {
+    Matches {
+        matches: Option<RVec<Match>>,
+        idx: usize,
+    },
+    Request(Result<Request, io::Error>),
+}
+
 struct PluginState {
     plugin: PluginRef,
-    rx: Option<mpsc::Receiver<RVec<Match>>>,
+    rx: Option<Receiver<RVec<Match>>>,
 }
 
 struct State {
@@ -167,12 +172,8 @@ async fn main() {
         Command::ConnectTo { path } => {
             let stream = UnixStream::connect(path).await.unwrap();
 
-            match worker(stream, &mut state).await {
-                Ok(res) => match res {
-                    WorkerResult::Quit => (),
-                    WorkerResult::Continue => (),
-                },
-                Err(why) => eprintln!("[anyrun-provider] Worker returned an error: {why}"),
+            if let Err(why) = worker(stream, &mut state).await {
+                eprintln!("[anyrun-provider] Worker returned an error: {why}");
             }
         }
     }
@@ -193,26 +194,35 @@ async fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResul
         .await?;
 
     loop {
-        for plugin_state in &mut state.plugins {
-            if let Some(rx) = &plugin_state.rx {
-                match rx.try_recv() {
-                    Ok(matches) => {
-                        plugin_state.rx = None;
-                        socket
-                            .send(&Response::Matches {
-                                plugin: plugin_state.plugin.info()(),
-                                matches,
-                            })
-                            .await?;
-                    }
-                    Err(mpsc::TryRecvError::Empty) => (),
-                    Err(mpsc::TryRecvError::Disconnected) => plugin_state.rx = None,
+        let rx_futures = state
+            .plugins
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(idx, plugin)| {
+                plugin
+                    .rx
+                    .as_mut()
+                    .map(|rx| Box::pin(async move { (rx.recv().await, idx) }))
+            })
+            .collect::<Vec<_>>();
+
+        let event = if !rx_futures.is_empty() {
+            tokio::select! {
+                ((matches, idx), _, _) = futures::future::select_all(rx_futures.into_iter()) => {
+                    Event::Matches { matches, idx }
+                }
+                req = socket.recv() => {
+                    Event::Request(req)
                 }
             }
-        }
+        } else {
+            // Drop it to drop the previous mutable borrow
+            std::mem::drop(rx_futures);
+            Event::Request(socket.recv().await)
+        };
 
-        match socket.recv().await {
-            Ok(request) => match request {
+        match event {
+            Event::Request(Ok(request)) => match request {
                 Request::Reset => {
                     for plugin_state in &mut state.plugins {
                         plugin_state.plugin.init()(state.config_dir.clone().into());
@@ -222,12 +232,12 @@ async fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResul
                 }
                 Request::Query { text } => {
                     for plugin_state in &mut state.plugins {
-                        let (tx, rx) = mpsc::channel();
+                        let (tx, rx) = mpsc::channel(10);
                         let plugin = plugin_state.plugin;
                         let text = text.clone();
 
-                        thread::spawn(move || {
-                            let _ = tx.send(plugin.get_matches()(text.into()));
+                        tokio::spawn(async move {
+                            let _ = tx.send(plugin.get_matches()(text.into())).await;
                         });
 
                         plugin_state.rx = Some(rx);
@@ -242,16 +252,13 @@ async fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResul
 
                     let result = plugin_state.plugin.handle_selection()(selection);
 
-                    socket.send(&Response::Handled { plugin, result })?;
+                    socket.send(&Response::Handled { plugin, result }).await?;
                 }
                 Request::Quit => {
                     return Ok(WorkerResult::Quit);
                 }
             },
-            Err(why) => match why.kind() {
-                io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(1));
-                }
+            Event::Request(Err(why)) => match why.kind() {
                 // This occurs when a subscriber disconnects
                 io::ErrorKind::UnexpectedEof => {
                     break;
@@ -261,6 +268,18 @@ async fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResul
                     break;
                 }
             },
+            Event::Matches { matches, idx } => {
+                let plugin = &mut state.plugins[idx];
+                plugin.rx = None;
+                if let Some(matches) = matches {
+                    socket
+                        .send(&Response::Matches {
+                            plugin: plugin.plugin.info()(),
+                            matches,
+                        })
+                        .await?;
+                }
+            }
         }
     }
 
