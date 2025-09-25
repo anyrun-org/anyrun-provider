@@ -1,6 +1,5 @@
 use std::{
     env, io,
-    os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
     sync::mpsc,
     thread::{self},
@@ -13,6 +12,7 @@ use anyrun_interface::{
 };
 use anyrun_provider_ipc::{CONFIG_DIRS, PLUGIN_PATHS, Request, Response, Socket};
 use clap::{Parser, Subcommand};
+use tokio::net::{UnixListener, UnixStream};
 
 /// The program providing Anyrun plugin search results
 #[derive(Parser)]
@@ -51,7 +51,8 @@ struct State {
     config_dir: String,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
 
     let user_dir = env::var("XDG_CONFIG_HOME")
@@ -153,8 +154,8 @@ fn main() {
         Command::Socket { path } => {
             let listener = UnixListener::bind(path).unwrap();
 
-            while let Ok((stream, _)) = listener.accept() {
-                match worker(stream, &mut state) {
+            while let Ok((stream, _)) = listener.accept().await {
+                match worker(stream, &mut state).await {
                     Ok(res) => match res {
                         WorkerResult::Quit => break,
                         WorkerResult::Continue => (),
@@ -164,9 +165,9 @@ fn main() {
             }
         }
         Command::ConnectTo { path } => {
-            let stream = UnixStream::connect(path).unwrap();
+            let stream = UnixStream::connect(path).await.unwrap();
 
-            match worker(stream, &mut state) {
+            match worker(stream, &mut state).await {
                 Ok(res) => match res {
                     WorkerResult::Quit => (),
                     WorkerResult::Continue => (),
@@ -178,17 +179,18 @@ fn main() {
 }
 
 /// Returns whether or not the provider should quit
-fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResult> {
+async fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResult> {
     let mut socket = Socket::new(stream);
-    socket.inner.get_ref().set_nonblocking(true)?;
 
-    socket.send(&Response::Ready {
-        info: state
-            .plugins
-            .iter()
-            .map(|plugin_state| plugin_state.plugin.info()())
-            .collect(),
-    })?;
+    socket
+        .send(&Response::Ready {
+            info: state
+                .plugins
+                .iter()
+                .map(|plugin_state| plugin_state.plugin.info()())
+                .collect(),
+        })
+        .await?;
 
     loop {
         for plugin_state in &mut state.plugins {
@@ -196,10 +198,12 @@ fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResult> {
                 match rx.try_recv() {
                     Ok(matches) => {
                         plugin_state.rx = None;
-                        socket.send(&Response::Matches {
-                            plugin: plugin_state.plugin.info()(),
-                            matches,
-                        })?;
+                        socket
+                            .send(&Response::Matches {
+                                plugin: plugin_state.plugin.info()(),
+                                matches,
+                            })
+                            .await?;
                     }
                     Err(mpsc::TryRecvError::Empty) => (),
                     Err(mpsc::TryRecvError::Disconnected) => plugin_state.rx = None,
@@ -207,7 +211,7 @@ fn worker(stream: UnixStream, state: &mut State) -> io::Result<WorkerResult> {
             }
         }
 
-        match socket.recv() {
+        match socket.recv().await {
             Ok(request) => match request {
                 Request::Reset => {
                     for plugin_state in &mut state.plugins {

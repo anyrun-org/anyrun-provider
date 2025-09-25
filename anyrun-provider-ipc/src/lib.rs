@@ -1,10 +1,11 @@
-use std::{
-    io::{self, BufRead, BufReader, Write},
-    os::unix::net::UnixStream,
-};
+use std::io;
 
 use anyrun_interface::{HandleResult, Match, PluginInfo, abi_stable::std_types::RVec};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::UnixStream,
+};
 
 // Default search paths, maintain backwards compatibility
 pub const CONFIG_DIRS: &[&str] = &["/etc/xdg/anyrun", "/etc/anyrun"];
@@ -81,16 +82,16 @@ impl Socket {
         Self { inner }
     }
 
-    pub fn send<T: Serialize>(&mut self, value: &T) -> io::Result<()> {
+    pub async fn send<T: Serialize>(&mut self, value: &T) -> io::Result<()> {
         let mut buf = serde_json::to_string(value).map_err(io::Error::other)?;
         buf.push('\n');
-        self.inner.get_mut().write_all(buf.as_bytes())?;
+        self.inner.get_mut().write_all(buf.as_bytes()).await?;
         Ok(())
     }
 
-    pub fn recv<T: DeserializeOwned>(&mut self) -> io::Result<T> {
+    pub async fn recv<T: DeserializeOwned>(&mut self) -> io::Result<T> {
         let mut buf = String::new();
-        self.inner.read_line(&mut buf)?;
+        self.inner.read_line(&mut buf).await?;
 
         serde_json::from_str::<T>(&buf).map_err(io::Error::other)
     }
