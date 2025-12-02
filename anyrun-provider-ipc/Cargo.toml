@@ -1,10 +1,10 @@
 [package]
 name = "anyrun-provider-ipc"
-version = "25.9.3"
+version = "25.12.0"
 edition = "2024"
 
 [dependencies]
-serde = { version = "1.0.219", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.143"
-tokio = { version = "1.47.1", features = ["net", "io-util"] }
+tokio = { version = "1.48.0", features = ["net", "io-util"] }
 anyrun-interface.workspace = true
